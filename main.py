@@ -64,7 +64,8 @@ async def analyze(request: dict):
         ("tencent/hy3-preview:free", "Hunyuan"),
         ("nvidia/nemotron-3-super-120b-a12b:free", "Nemotron 120B"),
         ("openai/gpt-oss-120b:free", "GPT OSS 120B"),
-    ]
+    ]   
+
     tasks = [ask_llm(query, model_id, name) for model_id, name in models]
     responses = await asyncio.gather(*tasks)
 

@@ -15,7 +15,7 @@ if submitted and query and product:
     with st.spinner("Querying 3 AI models simultaneously..."):
         try:
             response = requests.post(
-                "http://127.0.0.1:8000/analyze",
+                "https://aeo-diagnostic.onrender.com/analyze",
                 json={"query": query, "product": product}
             )
             data = response.json()
