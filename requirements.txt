@@ -1,8 +1,7 @@
 fastapi
 uvicorn
 python-dotenv
-google-generativeai
-openai
 requests
 streamlit
 httpx
+plotly

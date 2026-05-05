@@ -17,10 +17,11 @@ app.add_middleware(
 )
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 MODELS = [
-    ("tencent/hy3-preview:free", "Hunyuan"),
-    ("nvidia/nemotron-3-super-120b-a12b:free", "Nemotron 120B"),
+    ("gemma-3-27b-it", "Gemma 3 27B"),
+    ("nvidia/nemotron-3-super-120b-a12b:free", "Nemotron 3 Super"),
     ("openai/gpt-oss-120b:free", "GPT OSS 120B"),
 ]
 
@@ -33,31 +34,76 @@ NEGATIVE_WORDS = ["avoid", "poor", "bad", "worst", "inferior", "overpriced",
 
 async def ask_llm(query: str, model: str, model_name: str) -> dict:
     async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": query}]
-            },
-            timeout=120.0
-        )
-        data = response.json()
-        if "choices" not in data:
-            return {"model": model_name, "response": f"Error: {data}", "error": True}
-        text = data["choices"][0]["message"]["content"]
-        return {"model": model_name, "response": text, "error": False}
+        try:
+            if model.startswith("gemini"):
+                response = await client.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}",
+                    headers={"Content-Type": "application/json"},
+                    json={"contents": [{"parts": [{"text": query}]}]},
+                    timeout=None
+                )
+                data = response.json()
+                print(f"[{model}] STATUS: {response.status_code}")
+                print(f"[{model}] RESPONSE: {data}")
+                if "candidates" not in data:
+                    return {"model": model_name, "response": f"Error: {data}", "error": True}
+                text = data["candidates"][0]["content"]["parts"][0]["text"]
+                return {"model": model_name, "response": text, "error": False}
+            else:
+                response = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://aeo-diagnostic.app",
+                        "X-Title": "AEO Diagnostic"
+                    },
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": query}],
+                        
+                    },
+                    timeout=None
+                )
+                data = response.json()
+                print(f"[{model}] STATUS: {response.status_code}")
+                print(f"[{model}] RESPONSE: {data}")
+                if "choices" not in data:
+                    return {"model": model_name, "response": f"Error: {data}", "error": True}
+                text = data["choices"][0]["message"]["content"]
+                return {"model": model_name, "response": text, "error": False}
+
+        except Exception as e:
+            print(f"[{model}] EXCEPTION: {str(e)}")
+            return {"model": model_name, "response": f"Error: {str(e)}", "error": True}
 
 def analyze_ranking(response: str, product: str) -> dict:
     response_lower = response.lower()
     product_lower = product.lower()
-    mentioned = product_lower in response_lower
-
-    if mentioned:
-        position = response_lower.find(product_lower)
+    
+    # Generate multiple variants to search for
+    variants = [
+        product_lower,
+        product_lower.replace("&", "and"),
+        product_lower.replace("and", "&"),
+        product_lower.replace(" ", ""),      # "h&m" -> "hm"
+        product_lower.replace("&", " and "), # "h&m" -> "h and m"
+        product_lower.replace("-", " "),     # "coca-cola" -> "coca cola"
+    ]
+    # Remove duplicates
+    variants = list(set(v.strip() for v in variants))
+    
+    # Check all variants
+    mentioned = any(v in response_lower for v in variants if v)
+    
+    # Find position using whichever variant matched
+    position = -1
+    for v in variants:
+        if v and v in response_lower:
+            position = response_lower.find(v)
+            break
+    
+    if mentioned and position != -1:
         total_length = len(response_lower)
         if position < total_length * 0.3:
             rank = "Top mention"
@@ -69,7 +115,6 @@ def analyze_ranking(response: str, product: str) -> dict:
             rank = "Late mention"
             score = 3
 
-        # Sentiment analysis around the mention
         window_start = max(0, position - 200)
         window_end = min(len(response_lower), position + 200)
         context = response_lower[window_start:window_end]
@@ -135,7 +180,12 @@ async def analyze(request: dict):
     product = request["product"]
     competitor = request.get("competitor", "")
 
-    tasks = [ask_llm(query, model_id, name) for model_id, name in MODELS]
+    # Wrap the query in a realistic prompt
+    prompt = f"""A customer asked: "{query}"
+
+Answer this as a helpful AI shopping assistant. Be specific — recommend actual brand names, explain why each is good, and rank them if possible. Give a natural, conversational response like ChatGPT or Perplexity would."""
+
+    tasks = [ask_llm(prompt, model_id, name) for model_id, name in MODELS]
     responses = await asyncio.gather(*tasks)
 
     results = {}
